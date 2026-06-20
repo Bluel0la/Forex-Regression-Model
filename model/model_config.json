@@ -1,0 +1,7 @@
+{
+    "pip_threshold": 0.4,
+    "k_candles": 12,
+    "model_version": "v6",
+    "use_time_exit": false,
+    "atr_sl_multiplier": 1.5
+}

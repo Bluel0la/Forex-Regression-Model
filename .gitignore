@@ -1,0 +1,4 @@
+.env
+.venv
+feature_names_v6.pkl
+forex_model_v6.pkl
