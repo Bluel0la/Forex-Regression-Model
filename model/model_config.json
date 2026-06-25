@@ -1,7 +1,15 @@
-{
-    "pip_threshold": 0.4,
+﻿{
+    "model_type": "barrier_v7",
+    "model_version": "v7",
     "k_candles": 12,
-    "model_version": "v6",
-    "use_time_exit": false,
-    "atr_sl_multiplier": 1.5
+    "atr_sl_multiplier": 2.0,
+    "confidence_threshold": 0.6,
+    "risk_pct": 0.02,
+    "max_risk_pct": 0.10,
+    "max_daily_drawdown": 0.20,
+    "max_open_trades": 2,
+    "max_position_size": 100000,
+    "slippage_pips": 0.2,
+    "spread_pips": 0.5,
+    "use_time_exit": false
 }
