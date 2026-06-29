@@ -17,11 +17,32 @@ import oandapyV20.endpoints.trades as trades
 from core.features import EUR_NEWS_COUNTRIES, FEATURE_COLUMNS_V7, ForexFeatureEngineer, USD_NEWS_COUNTRIES
 
 
+log_handlers = [logging.StreamHandler()]
+if not os.getenv("VERCEL"):
+    log_handlers.insert(0, logging.FileHandler("forex_bot.log"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("forex_bot.log"), logging.StreamHandler()],
+    handlers=log_handlers,
 )
+
+
+def app(environ, start_response):
+    """Small WSGI health endpoint for Vercel's Python runtime."""
+    payload = {
+        "status": "ok",
+        "service": "forex-regression-model",
+        "message": "Deploy is healthy. Run python main.py to start the trading bot loop.",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = [
+        ("Content-Type", "application/json"),
+        ("Content-Length", str(len(body))),
+    ]
+
+    start_response("200 OK", headers)
+    return [body]
 
 
 class OandaQuantBot:
