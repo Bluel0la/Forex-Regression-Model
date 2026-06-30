@@ -81,25 +81,29 @@ class OandaQuantBot:
         self.last_news_fetch_time = None
 
     def load_config(self):
+        defaults = {
+            "model_type": "barrier_v7",
+            "k_candles": 12,
+            "atr_sl_multiplier": 1.5,
+            "confidence_threshold": 0.55,
+            "risk_pct": 0.02,
+            "max_risk_pct": 0.10,
+            "max_daily_drawdown": 0.20,
+            "max_open_trades": 2,
+            "max_position_size": 100000,
+            "use_time_exit": False,
+        }
         try:
-            with open("model/model_config.json", "r") as f:
+            with open("model/model_config.json", "r", encoding="utf-8-sig") as f:
                 config = json.load(f)
             logging.info("Loaded model config: %s", config)
             return config
         except FileNotFoundError:
             logging.warning("model_config.json not found. Using conservative v7 defaults.")
-            return {
-                "model_type": "barrier_v7",
-                "k_candles": 12,
-                "atr_sl_multiplier": 1.5,
-                "confidence_threshold": 0.55,
-                "risk_pct": 0.02,
-                "max_risk_pct": 0.10,
-                "max_daily_drawdown": 0.20,
-                "max_open_trades": 2,
-                "max_position_size": 100000,
-                "use_time_exit": False,
-            }
+            return defaults
+        except json.JSONDecodeError as exc:
+            logging.warning("model_config.json is malformed (%s). Using defaults.", exc)
+            return defaults
 
     # ------------------------------------------------------------------
     # NEWS CALENDAR
@@ -110,18 +114,31 @@ class OandaQuantBot:
         return mapping.get(country, country)
 
     def fetch_news_calendar(self):
+        loaded = False
         if self.finnhub_api_key:
-            if self._fetch_from_finnhub():
+            loaded = self._fetch_from_finnhub()
+            if loaded:
                 return
-            logging.warning("Finnhub failed. Falling back to Forex Factory...")
-        self._fetch_from_forex_factory()
+            logging.info("Falling back to Forex Factory calendar...")
+        loaded = self._fetch_from_forex_factory()
+        if not loaded:
+            logging.warning(
+                "No news calendar loaded. Using default 10000-minute news proximity until next refresh."
+            )
 
     def _cache_news_events(self, df, time_column, country_column, high_impact_value):
+        required_columns = {"impact", time_column, country_column}
+        missing_columns = required_columns.difference(df.columns)
+        if missing_columns:
+            logging.warning("News calendar missing expected columns: %s", sorted(missing_columns))
+            return False
+
         df = df[df["impact"] == high_impact_value].copy()
         if df.empty:
             return False
 
-        df["event_time"] = pd.to_datetime(df[time_column], utc=True)
+        df["event_time"] = pd.to_datetime(df[time_column], utc=True, errors="coerce")
+        df = df.dropna(subset=["event_time"])
         df["country_norm"] = df[country_column].map(self.normalize_news_country)
         self.us_news_cache = df.loc[
             df["country_norm"].isin(USD_NEWS_COUNTRIES), "event_time"
@@ -129,41 +146,57 @@ class OandaQuantBot:
         self.eu_news_cache = df.loc[
             df["country_norm"].isin(EUR_NEWS_COUNTRIES), "event_time"
         ].sort_values().reset_index(drop=True)
-        return not (self.us_news_cache.empty and self.eu_news_cache.empty)
+        loaded = not (self.us_news_cache.empty and self.eu_news_cache.empty)
+        if loaded:
+            logging.info(
+                "News calendar loaded: %s US events, %s EU events",
+                len(self.us_news_cache),
+                len(self.eu_news_cache),
+            )
+        return loaded
 
     def _fetch_from_finnhub(self):
         today = datetime.now(timezone.utc)
         start_str = today.strftime("%Y-%m-%d")
         end_str = (today + timedelta(days=3)).strftime("%Y-%m-%d")
-        url = (
-            "https://finnhub.io/api/v1/calendar/economic"
-            f"?from={start_str}&to={end_str}&token={self.finnhub_api_key}"
-        )
+        url = "https://finnhub.io/api/v1/calendar/economic"
+        params = {"from": start_str, "to": end_str, "token": self.finnhub_api_key}
         try:
-            response = requests.get(url, timeout=15)
+            response = requests.get(url, params=params, timeout=(3.05, 8))
             response.raise_for_status()
             data = response.json().get("economicCalendar", [])
             if not data:
+                logging.info("Finnhub returned no economic calendar events for %s -> %s.", start_str, end_str)
                 return False
             return self._cache_news_events(pd.DataFrame(data), "time", "country", "high")
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            if status_code in (401, 403):
+                logging.warning("Finnhub rejected the API key or calendar access (HTTP %s).", status_code)
+            else:
+                logging.warning("Finnhub calendar request failed (HTTP %s).", status_code)
+            return False
         except Exception as exc:
-            logging.error("Finnhub fetch failed: %s", type(exc).__name__)
+            logging.warning("Finnhub calendar request failed: %s", type(exc).__name__)
             return False
 
-    def _fetch_from_forex_factory(self, max_retries=3):
+    def _fetch_from_forex_factory(self, max_retries=2):
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         headers = {"User-Agent": "Mozilla/5.0"}
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, headers=headers, timeout=15)
+                response = requests.get(url, headers=headers, timeout=(3.05, 8))
                 if response.status_code == 429:
-                    time.sleep(2 ** (attempt + 1))
+                    logging.warning("Forex Factory rate limited the calendar request (HTTP 429).")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
                     continue
                 response.raise_for_status()
                 if self._cache_news_events(pd.DataFrame(response.json()), "date", "country", "High"):
-                    return
+                    return True
             except Exception as exc:
                 logging.warning("Forex Factory fetch attempt failed: %s", type(exc).__name__)
+        return False
 
     # ------------------------------------------------------------------
     # OANDA ACCOUNT STATE
